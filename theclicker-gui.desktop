@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=TheClicker GUI
+Exec=/home/brian/Projects/autoclicker/run-gui.sh
+Icon=utilities-terminal
+Categories=Utility;
+Terminal=false
+StartupNotify=false
