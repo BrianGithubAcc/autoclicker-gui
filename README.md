@@ -2,6 +2,9 @@
 [![Crates.io](https://img.shields.io/crates/v/theclicker.svg)](https://crates.io/crates/theclicker)
 
 Works on both xorg and wayland by utilising uinput and evdev!
+# GUI
+
+![GUI](images/gui.png)
 
 ## Running
 ![Running](images/running.png)
