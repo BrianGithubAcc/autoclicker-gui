@@ -52,9 +52,11 @@ impl InputDevice {
         let file = match File::open(&path) {
             Ok(file) => file,
             Err(err) => {
-                println!("Error: {}", err);
-                println!("Invalid device OR Not having access to the file, try as root!");
-                exit(1);
+                return Err(format!(
+                    "Error opening {}: {}. Invalid device or no access (try as root or add your user to input group)",
+                    path.display(),
+                    err
+                ));
             }
         };
 
@@ -78,10 +80,10 @@ impl InputDevice {
             .unwrap()
             .filter_map(|res| res.ok())
             .filter_map(|entry| {
-                if let Ok(ty) = entry.file_type()
-                    && ty.is_dir()
-                {
-                    return None;
+                if let Ok(ty) = entry.file_type() {
+                    if ty.is_dir() {
+                        return None;
+                    }
                 }
 
                 if entry.path().file_name().unwrap().to_str().unwrap() == "mice" {

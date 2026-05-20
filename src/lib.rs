@@ -2,6 +2,7 @@ mod args;
 mod device;
 
 pub use args::Args;
+pub use args::Command;
 
 use std::{
     io::{IsTerminal, Write, stdout},
@@ -38,6 +39,24 @@ pub struct AutoclickerState {
     lock: bool,
 }
 
+impl AutoclickerState {
+    pub fn left(&self) -> bool {
+        self.left
+    }
+
+    pub fn middle(&self) -> bool {
+        self.middle
+    }
+
+    pub fn right(&self) -> bool {
+        self.right
+    }
+
+    pub fn locked(&self) -> bool {
+        self.lock
+    }
+}
+
 pub struct StateNormal {
     left_bind: Option<u16>,
     middle_bind: Option<u16>,
@@ -53,7 +72,7 @@ pub struct StateNormal {
 }
 
 impl StateNormal {
-    pub fn run(self, shared: Shared) {
+    pub fn run(self, shared: Shared, external_sender: Option<mpsc::Sender<AutoclickerState>>) {
         let (transmitter, receiver) = mpsc::channel::<AutoclickerState>();
 
         let mut events: [input_event; 1] = unsafe { std::mem::zeroed() };
@@ -72,6 +91,9 @@ impl StateNormal {
 
         state.lock = self.lock_unlock_bind.is_some();
         _ = transmitter.send(state);
+        if let Some(ext) = &external_sender {
+            let _ = ext.send(state);
+        }
 
         thread::spawn(move || {
             loop {
@@ -101,30 +123,31 @@ impl StateNormal {
                             (right_bind, &mut state.right),
                             (middle_bind, &mut state.middle),
                         ] {
-                            if let Some(bind) = bind
-                                && event.code == bind
-                            {
-                                if hold {
-                                    if pressed != *state {
-                                        *state = pressed;
+                            if let Some(bind) = bind {
+                                if event.code == bind {
+                                    if hold {
+                                        if pressed != *state {
+                                            *state = pressed;
+                                        }
+                                    } else if pressed {
+                                        *state = !*state;
                                     }
-                                } else if pressed {
-                                    *state = !*state;
+                                    used = true;
                                 }
-                                used = true;
                             }
                         }
                     }
-
-                    if let Some(bind) = self.lock_unlock_bind
-                        && event.code == bind
-                        && pressed
-                    {
-                        state.lock = !state.lock;
+                    if let Some(bind) = self.lock_unlock_bind {
+                        if event.code == bind && pressed {
+                            state.lock = !state.lock;
+                        }
                     }
 
                     if old_state != state {
                         transmitter.send(state).unwrap();
+                        if let Some(ext) = &external_sender {
+                            let _ = ext.send(state);
+                        }
                     }
 
                     if grab && !used {
@@ -152,7 +175,7 @@ pub struct StateLegacy {
 }
 
 impl StateLegacy {
-    fn run(self, shared: Shared) {
+    fn run(self, shared: Shared, external_sender: Option<mpsc::Sender<AutoclickerState>>) {
         let (transmitter, receiver) = mpsc::channel::<AutoclickerState>();
 
         let input = shared.input;
@@ -164,6 +187,9 @@ impl StateLegacy {
             ..Default::default()
         };
         transmitter.send(state).unwrap();
+        if let Some(ext) = &external_sender {
+            let _ = ext.send(state);
+        }
 
         let mut old_left = 0;
         let mut old_right = 0;
@@ -207,6 +233,9 @@ impl StateLegacy {
 
                 if old_state != state {
                     transmitter.send(state).unwrap();
+                    if let Some(ext) = &external_sender {
+                        let _ = ext.send(state);
+                    }
                 }
             }
         });
@@ -281,10 +310,10 @@ pub enum Variant {
 }
 
 impl Variant {
-    pub fn run(self, shared: Shared) {
+    pub fn run(self, shared: Shared, external_sender: Option<mpsc::Sender<AutoclickerState>>) {
         match self {
-            Variant::Normal(state_normal) => state_normal.run(shared),
-            Variant::Legacy(state_legacy) => state_legacy.run(shared),
+            Variant::Normal(state_normal) => state_normal.run(shared, external_sender),
+            Variant::Legacy(state_legacy) => state_legacy.run(shared, external_sender),
         }
     }
 }
@@ -309,9 +338,11 @@ impl TheClicker {
             command,
         }: Args,
     ) -> Self {
-        let output = OutputDevice::uinput_open(PathBuf::from("/dev/uinput"), "TheClicker").unwrap();
+        Self::from_command(debug, beep, command.unwrap_or_else(command_from_user_input))
+    }
 
-        let command = command.unwrap_or_else(command_from_user_input);
+    pub fn from_command(debug: bool, beep: bool, command: Command) -> Self {
+        let output = OutputDevice::uinput_open(PathBuf::from("/dev/uinput"), "TheClicker").unwrap();
 
         print!("Using args: `");
         if debug {
@@ -422,7 +453,21 @@ impl TheClicker {
     }
 
     pub fn main_loop(self) {
-        self.variant.run(self.shared);
+        self.variant.run(self.shared, None);
+    }
+
+    /// Spawn the clicker in a background thread and return a receiver for state updates.
+    pub fn spawn(self) -> mpsc::Receiver<AutoclickerState> {
+        let (tx, rx) = mpsc::channel::<AutoclickerState>();
+        thread::spawn(move || {
+            self.variant.run(self.shared, Some(tx));
+        });
+        rx
+    }
+
+    /// Run the main loop but forward state updates to provided sender.
+    pub fn main_loop_with_sender(self, sender: mpsc::Sender<AutoclickerState>) {
+        self.variant.run(self.shared, Some(sender));
     }
 }
 
@@ -459,22 +504,18 @@ fn print_active(toggle: &AutoclickerState) {
 
     print!("Active: ");
     if toggle.lock {
-        print!("LOCKED: ")
+        print!("[L] ");
     }
     if toggle.left {
-        print!("left ")
+        print!("[1] ");
+    }
+    if toggle.middle {
+        print!("[M] ");
     }
     if toggle.right {
-        if toggle.left {
-            print!(", ")
-        }
-        print!("right")
+        print!("[2] ");
     }
     println!();
-
-    if is_terminal {
-        print!("\x1b[1F");
-    }
 }
 
 fn command_from_user_input() -> args::Command {
@@ -632,10 +673,10 @@ fn choose_usize(message: impl std::fmt::Display, default: Option<usize>) -> usiz
         print!("\x1B[0;39m");
         _ = std::io::stdout().flush();
 
-        if let Some(default) = default
-            && response.is_empty()
-        {
-            return default;
+        if response.is_empty() {
+            if let Some(default) = default {
+                return default;
+            }
         }
 
         let Ok(num) = response.parse::<usize>() else {
